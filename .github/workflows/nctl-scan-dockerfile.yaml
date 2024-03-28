@@ -36,7 +36,7 @@ jobs:
           unzip -q nctl.zip
           chmod +x nctl
 
-      - name: NCTL Scan - Dockerfile
-        run: ./nctl scan git-repo --policies ./policy/
-  
+      - name: NCTL Scan - Dockerfile 
+        run: echo Hello && ./nctl scan git-repo --policies ./policy/
+        
       - run: echo "🍏 This job's status is ${{ job.status }}."
