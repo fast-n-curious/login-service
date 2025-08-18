@@ -1,22 +1,18 @@
-name: NCTL Security Scan
-
+name: NCTL Scan Repo
 on:
   push:
     branches: [ main, master, develop ]
   pull_request:
     branches: [ main, master, develop ]
   workflow_dispatch: # Allow manual triggering
-
 env:
   NIRMATA_TOKEN: ${{ secrets.NIRMATA_TOKEN }}
   NIRMATA_URL: ${{ secrets.NIRMATA_URL }}
   NIRMATA_USERID: ${{ secrets.NIRMATA_USERID }}
-
 jobs:
   nctl-scan:
     name: NCTL Security Scan
     runs-on: ubuntu-latest
-    
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
@@ -46,25 +42,28 @@ jobs:
         echo "Starting repository security scan..."
         
         # Perform comprehensive repository scan with specific policy sets
+        # Redirect output to file since --output-file is not supported
         nctl scan repository \
           --policy-sets pss-baseline,pss-restricted,rbac-best-practices,dockerfile-best-practices \
-          --publish-token $NIRMATA_TOKEN \
-          --output json \
-          --output-file scan-results.json
+          --publish-token $NIRMATA_TOKEN > scan-results.txt 2>&1
         
         # Check scan exit code
-        if [ $? -eq 0 ]; then
+        SCAN_EXIT_CODE=$?
+        if [ $SCAN_EXIT_CODE -eq 0 ]; then
           echo "Scan completed successfully"
           echo "::set-output name=scan_status::success"
         else
-          echo "Scan completed with violations"
+          echo "Scan completed with violations or errors"
           echo "::set-output name=scan_status::violations"
         fi
         
         # Parse scan results for summary
-        if [ -f scan-results.json ]; then
-          VIOLATION_COUNT=$(jq '.violations | length' scan-results.json 2>/dev/null || echo "0")
-          POLICY_COUNT=$(jq '.policies | length' scan-results.json 2>/dev/null || echo "0")
+        if [ -f scan-results.txt ]; then
+          echo "Scan output saved to scan-results.txt"
+          
+          # Try to extract violation count from the output
+          VIOLATION_COUNT=$(grep -c "violation\|Violation\|VIOLATION" scan-results.txt 2>/dev/null || echo "0")
+          POLICY_COUNT=$(grep -c "policy\|Policy\|POLICY" scan-results.txt 2>/dev/null || echo "0")
           
           echo "::set-output name=violation_count::$VIOLATION_COUNT"
           echo "::set-output name=policy_count::$POLICY_COUNT"
@@ -72,6 +71,15 @@ jobs:
           echo "Scan Summary:"
           echo "- Policies evaluated: $POLICY_COUNT"
           echo "- Violations found: $VIOLATION_COUNT"
+          
+          # Display scan output for debugging
+          echo "=== NCTL Scan Output ==="
+          cat scan-results.txt
+          echo "=== End Scan Output ==="
+        else
+          echo "No scan results file generated"
+          echo "::set-output name=violation_count::0"
+          echo "::set-output name=policy_count::0"
         fi
 
     - name: Generate Scan Report
@@ -79,9 +87,10 @@ jobs:
       run: |
         echo "## 🔍 NCTL Security Scan Results" >> $GITHUB_STEP_SUMMARY
         
-        if [ -f scan-results.json ]; then
-          VIOLATION_COUNT=$(jq '.violations | length' scan-results.json 2>/dev/null || echo "0")
-          POLICY_COUNT=$(jq '.policies | length' scan-results.json 2>/dev/null || echo "0")
+        if [ -f scan-results.txt ]; then
+          # Try to extract violation count from the output
+          VIOLATION_COUNT=$(grep -c "violation\|Violation\|VIOLATION" scan-results.txt 2>/dev/null || echo "0")
+          POLICY_COUNT=$(grep -c "policy\|Policy\|POLICY" scan-results.txt 2>/dev/null || echo "0")
           
           echo "### 📊 Scan Summary" >> $GITHUB_STEP_SUMMARY
           echo "- **Policies Evaluated:** $POLICY_COUNT" >> $GITHUB_STEP_SUMMARY
@@ -93,15 +102,20 @@ jobs:
             echo "Security violations were found during the scan. Please review and remediate these issues." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
             
-            # Extract violation details
+            # Extract violation details from text output
             echo "#### Violation Details:" >> $GITHUB_STEP_SUMMARY
-            jq -r '.violations[] | "- **\(.policy)**: \(.message)"' scan-results.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Unable to parse violation details" >> $GITHUB_STEP_SUMMARY
+            grep -i "violation\|error\|failed" scan-results.txt | head -10 >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Unable to parse violation details" >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           else
             echo "### ✅ No Violations Found" >> $GITHUB_STEP_SUMMARY
             echo "Great! No security violations were detected in this scan." >> $GITHUB_STEP_SUMMARY
             echo "" >> $GITHUB_STEP_SUMMARY
           fi
+          
+          # Show scan output summary
+          echo "### 📋 Scan Output Summary" >> $GITHUB_STEP_SUMMARY
+          echo "Full scan output has been saved and can be viewed in the workflow logs." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
         else
           echo "### ❌ Scan Results Unavailable" >> $GITHUB_STEP_SUMMARY
           echo "Unable to generate scan report. Please check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
@@ -139,7 +153,7 @@ jobs:
       with:
         name: nctl-scan-results
         path: |
-          scan-results.json
+          scan-results.txt
           .nctl/
         retention-days: 30
 
