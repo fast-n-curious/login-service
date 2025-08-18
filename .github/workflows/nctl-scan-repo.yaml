@@ -77,6 +77,39 @@ jobs:
         nctl info || echo "Login session check failed"
         echo "=== End Login Session Check ==="
         
+        # Try scanning with global flags directly (bypassing login session)
+        echo "=== Testing Scan with Global Flags ==="
+        nctl scan repository --token $NIRMATA_TOKEN --url $NIRMATA_URL > global-scan.txt 2>&1
+        GLOBAL_EXIT_CODE=$?
+        echo "Global scan exit code: $GLOBAL_EXIT_CODE"
+        if [ -f global-scan.txt ]; then
+          echo "Global scan output:"
+          cat global-scan.txt
+        fi
+        echo "=== End Global Scan Test ==="
+        
+        # Try with debug flag to get more information
+        echo "=== Testing Scan with Debug Flag ==="
+        nctl scan repository --debug --token $NIRMATA_TOKEN --url $NIRMATA_URL > debug-scan.txt 2>&1
+        DEBUG_EXIT_CODE=$?
+        echo "Debug scan exit code: $DEBUG_EXIT_CODE"
+        if [ -f debug-scan.txt ]; then
+          echo "Debug scan output:"
+          cat debug-scan.txt
+        fi
+        echo "=== End Debug Scan Test ==="
+        
+        # Try scanning with explicit repository path
+        echo "=== Testing Scan with Explicit Path ==="
+        nctl scan repository . --token $NIRMATA_TOKEN --url $NIRMATA_URL > path-scan.txt 2>&1
+        PATH_EXIT_CODE=$?
+        echo "Path scan exit code: $PATH_EXIT_CODE"
+        if [ -f path-scan.txt ]; then
+          echo "Path scan output:"
+          cat path-scan.txt
+        fi
+        echo "=== End Path Scan Test ==="
+        
         # Test scan without policy sets first (using existing login session)
         echo "=== Testing Basic Scan ==="
         nctl scan repository > test-scan.txt 2>&1
@@ -103,6 +136,17 @@ jobs:
         echo "Git log (last 3 commits):"
         git log --oneline -3 || echo "Git log failed"
         echo "=== End Repository Structure Check ==="
+        
+        # Check if there are any obvious issues with the repository
+        echo "=== Repository Health Check ==="
+        echo "Checking for common issues:"
+        echo "1. Git repository integrity:"
+        git fsck --no-dangling || echo "Git fsck failed"
+        echo "2. Working directory status:"
+        git diff --name-only || echo "No uncommitted changes"
+        echo "3. Repository size:"
+        du -sh . || echo "Size check failed"
+        echo "=== End Repository Health Check ==="
         
         # Perform comprehensive repository scan with specific policy sets
         # Redirect output to file since --output-file is not supported
