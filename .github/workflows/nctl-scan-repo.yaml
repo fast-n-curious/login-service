@@ -1,53 +1,213 @@
-# name: NCTL Scan Pipeline Demo
-# run-name: ${{ github.actor }} has triggered Scan Action 🚀
-# on:
-#   pull_request:
-#     branches:
-#       - "main"
-#   push:
-#     branches:
-#       - "main"
+name: NCTL Security Scan
 
-# env:
-#   NIRMATA_TOKEN: ${{ secrets.NIRMATA_TOKEN }}
-#   NIRMATA_URL: ${{ secrets.NIRMATA_URL }}
-#   AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#   AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#   AWS_SESSION_TOKEN: ${{ secrets.AWS_SESSION_TOKEN }}
+on:
+  push:
+    branches: [ main, master, develop ]
+  pull_request:
+    branches: [ main, master, develop ]
+  workflow_dispatch: # Allow manual triggering
 
+env:
+  NIRMATA_TOKEN: ${{ secrets.NIRMATA_TOKEN }}
+  NIRMATA_URL: ${{ secrets.NIRMATA_URL }}
+  NIRMATA_USERID: ${{ secrets.NIRMATA_USERID }}
 
-# jobs:
-#   NCTL-Scan-Repository:
-#     runs-on: ubuntu-latest
-#     steps:
-#       - run: echo "🎉 The job was automatically triggered by a ${{ github.event_name }} event."
+jobs:
+  nctl-scan:
+    name: NCTL Security Scan
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      with:
+        fetch-depth: 0 # Fetch full history for better scanning
 
-#       - name: Check out main repository code
-#         uses: actions/checkout@v4
+    - name: Setup Java
+      uses: actions/setup-java@v4
+      with:
+        distribution: 'temurin'
+        java-version: '17'
 
-#       - name: NCTL-scan-installer - Terraform
-#         uses: supplypike/setup-bin@v4
-#         with:
-#           uri: 'https://nirmata-downloads.s3.us-east-2.amazonaws.com/nctl/nctl_4.2.2-rc.1/nctl_4.2.2-rc.1_linux_386.zip'
-#           name: 'nctl'
-#           version: '4.2.2-rc.1'
+    - name: Install nctl-scan
+      uses: nirmata/action-install-nctl-scan@v0.0.6
+      env:
+        NIRMATA_TOKEN: ${{ env.NIRMATA_TOKEN }}
+        NIRMATA_URL: ${{ env.NIRMATA_URL }}
 
-#       - name: Check nctl version
-#         run: |
-#           nctl version
+    - name: Login to Nirmata
+      run: |
+        nctl login --url $NIRMATA_URL --userid $NIRMATA_USERID --token $NIRMATA_TOKEN
+        echo "Successfully logged into Nirmata Control Hub"
 
-#       - name: test-install
-#         run: nctl scan repository --help
-
-#       - name: nctl login
-#         run: nctl login --url $NIRMATA_URL --userid anusha.hegde@nirmata.com --token $NIRMATA_TOKEN
+    - name: Scan Repository with NCTL
+      id: scan
+      run: |
+        echo "Starting repository security scan..."
         
+        # Perform comprehensive repository scan with specific policy sets
+        nctl scan repository \
+          --policy-sets pss-baseline,pss-restricted,rbac-best-practices,dockerfile-best-practices \
+          --publish-token $NIRMATA_TOKEN \
+          --output json \
+          --output-file scan-results.json
         
-#       - name: NCTL Scan Repository
-#         run: |
-#           chmod +x ./scripts/install-tf.sh
-#           ./scripts/install-tf.sh
-#           ls -lR
-#           nctl scan repository --policies policy/  --publish-token $NIRMATA_TOKEN
-  
-#       - run: echo "🍏 This job's status is ${{ job.status }}."
+        # Check scan exit code
+        if [ $? -eq 0 ]; then
+          echo "Scan completed successfully"
+          echo "::set-output name=scan_status::success"
+        else
+          echo "Scan completed with violations"
+          echo "::set-output name=scan_status::violations"
+        fi
+        
+        # Parse scan results for summary
+        if [ -f scan-results.json ]; then
+          VIOLATION_COUNT=$(jq '.violations | length' scan-results.json 2>/dev/null || echo "0")
+          POLICY_COUNT=$(jq '.policies | length' scan-results.json 2>/dev/null || echo "0")
+          
+          echo "::set-output name=violation_count::$VIOLATION_COUNT"
+          echo "::set-output name=policy_count::$POLICY_COUNT"
+          
+          echo "Scan Summary:"
+          echo "- Policies evaluated: $POLICY_COUNT"
+          echo "- Violations found: $VIOLATION_COUNT"
+        fi
+
+    - name: Generate Scan Report
+      if: always()
+      run: |
+        echo "## 🔍 NCTL Security Scan Results" >> $GITHUB_STEP_SUMMARY
+        
+        if [ -f scan-results.json ]; then
+          VIOLATION_COUNT=$(jq '.violations | length' scan-results.json 2>/dev/null || echo "0")
+          POLICY_COUNT=$(jq '.policies | length' scan-results.json 2>/dev/null || echo "0")
+          
+          echo "### 📊 Scan Summary" >> $GITHUB_STEP_SUMMARY
+          echo "- **Policies Evaluated:** $POLICY_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "- **Violations Found:** $VIOLATION_COUNT" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          
+          if [ "$VIOLATION_COUNT" -gt 0 ]; then
+            echo "### ⚠️ Violations Detected" >> $GITHUB_STEP_SUMMARY
+            echo "Security violations were found during the scan. Please review and remediate these issues." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+            
+            # Extract violation details
+            echo "#### Violation Details:" >> $GITHUB_STEP_SUMMARY
+            jq -r '.violations[] | "- **\(.policy)**: \(.message)"' scan-results.json >> $GITHUB_STEP_SUMMARY 2>/dev/null || echo "- Unable to parse violation details" >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          else
+            echo "### ✅ No Violations Found" >> $GITHUB_STEP_SUMMARY
+            echo "Great! No security violations were detected in this scan." >> $GITHUB_STEP_SUMMARY
+            echo "" >> $GITHUB_STEP_SUMMARY
+          fi
+        else
+          echo "### ❌ Scan Results Unavailable" >> $GITHUB_STEP_SUMMARY
+          echo "Unable to generate scan report. Please check the workflow logs for details." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+        fi
+
+    - name: Provide NCH Integration Options
+      if: always()
+      run: |
+        echo "### 🔗 Nirmata Control Hub Integration" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "To view detailed scan results and manage policy violations:" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        # Get repository URL for NCH integration
+        REPO_URL="${{ github.server_url }}/${{ github.repository }}"
+        NCH_REPO_URL="https://www.nirmata.io/webclient/#clusters/policyReport/repositoryDetails?repo=$REPO_URL&backurl=clustersPolicyReport"
+        
+        echo "#### 📋 View Policy Violation Reports" >> $GITHUB_STEP_SUMMARY
+        echo "Click here to view detailed policy violation reports in Nirmata Control Hub:" >> $GITHUB_STEP_SUMMARY
+        echo "[View in NCH]($NCH_REPO_URL)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "#### ⚡ Create Policy Exception" >> $GITHUB_STEP_SUMMARY
+        echo "Need to create a policy exception? Use the same link above and navigate to the Policy Exceptions section:" >> $GITHUB_STEP_SUMMARY
+        echo "[Create Exception in NCH]($NCH_REPO_URL)" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        
+        echo "---" >> $GITHUB_STEP_SUMMARY
+        echo "*Note: You must be logged into Nirmata Control Hub to access these features.*" >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload Scan Results
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: nctl-scan-results
+        path: |
+          scan-results.json
+          .nctl/
+        retention-days: 30
+
+    - name: Comment on PR
+      if: github.event_name == 'pull_request' && always()
+      uses: actions/github-script@v7
+      with:
+        script: |
+          const { data: comments } = await github.rest.issues.listComments({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+          });
+          
+          // Check if we already commented
+          const existingComment = comments.find(comment => 
+            comment.user.type === 'Bot' && 
+            comment.body.includes('NCTL Security Scan Results')
+          );
+          
+          if (existingComment) {
+            // Update existing comment
+            await github.rest.issues.updateComment({
+              comment_id: existingComment.id,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔍 NCTL Security Scan Results
+              
+              **Scan Status:** ${process.env.SCAN_STATUS || 'Unknown'}
+              **Violations Found:** ${process.env.VIOLATION_COUNT || 'Unknown'}
+              
+              ### 📋 View Policy Violation Reports
+              [View in Nirmata Control Hub](https://www.nirmata.io/webclient/#clusters/policyReport/repositoryDetails?repo=${context.payload.repository.html_url}&backurl=clustersPolicyReport)
+              
+              ### ⚡ Create Policy Exception
+              [Create Exception in NCH](https://www.nirmata.io/webclient/#clusters/policyReport/repositoryDetails?repo=${context.payload.repository.html_url}&backurl=clustersPolicyReport)
+              
+              ---
+              *This comment was automatically generated by the NCTL Security Scan workflow.*`
+            });
+          } else {
+            // Create new comment
+            await github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `## 🔍 NCTL Security Scan Results
+              
+              **Scan Status:** ${process.env.SCAN_STATUS || 'Unknown'}
+              **Violations Found:** ${process.env.VIOLATION_COUNT || 'Unknown'}
+              
+              ### 📋 View Policy Violation Reports
+              [View in Nirmata Control Hub](https://www.nirmata.io/webclient/#clusters/policyReport/repositoryDetails?repo=${context.payload.repository.html_url}&backurl=clustersPolicyReport)
+              
+              ### ⚡ Create Policy Exception
+              [Create Exception in NCH](https://www.nirmata.io/webclient/#clusters/policyReport/repositoryDetails?repo=${context.payload.repository.html_url}&backurl=clustersPolicyReport)
+              
+              ---
+              *This comment was automatically generated by the NCTL Security Scan workflow.*`
+            });
+          }
+      env:
+        SCAN_STATUS: ${{ steps.scan.outputs.scan_status }}
+        VIOLATION_COUNT: ${{ steps.scan.outputs.violation_count }}
+
+    - name: Fail on Critical Violations
+      if: steps.scan.outputs.scan_status == 'violations' && github.event_name == 'pull_request'
+      run: |
+        echo "❌ Security violations detected. Please review and fix these issues before merging."
+        echo "You can view detailed reports in Nirmata Control Hub or create policy exceptions if needed."
+        exit 1
